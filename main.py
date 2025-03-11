@@ -55,7 +55,9 @@ def get_sub_claim_or_ip():
 
     try:
         # X‑MS‑CLIENT‑PRINCIPALヘッダーの取得
-        client_principal_encoded = headers.get("X-MS-CLIENT-PRINCIPAL") or headers.get("X-Ms-Client-Principal")
+        client_principal_encoded = headers.get("X-Ms-Client-Principal") or headers.get("X-MS-CLIENT-PRINCIPAL") 
+        print(client_principal_encoded)
+        print(headers.get("X-Ms-Client-Principal"))
         if client_principal_encoded:
             # Base64デコード
             decoded_bytes = base64.b64decode(client_principal_encoded)
