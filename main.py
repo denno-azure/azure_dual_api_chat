@@ -61,8 +61,10 @@ def get_sub_claim_or_ip():
             decoded_bytes = base64.b64decode(client_principal_encoded)
             # JSONパース
             principal = json.loads(decoded_bytes.decode("utf-8"))
+            print(principal)
             # GoogleのOIDCではclaimsオブジェクト内にsubクレームが存在するのが一般的です
             claims = principal.get("claims", {})
+            print(claims)
 
             if "email" in claims:
                 email = claims["sub"]
