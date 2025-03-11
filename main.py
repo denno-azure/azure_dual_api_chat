@@ -81,7 +81,7 @@ def get_sub_claim_or_ip():
 
     # X‑Forwarded‑ForまたはREMOTE_ADDRヘッダーからIPアドレスを取得する
     ip = headers.get("X-Forwarded-For") or headers.get("REMOTE_ADDR")
-    print(headers)
+    print(headers.to_dict())
     if ip:
         return ip, None
     else:
