@@ -51,9 +51,12 @@ def get_sub_claim_or_ip():
     if not headers:
         # ヘッダーが見つからない場合はサーバーのIPアドレスを取得して返す
         server_ip = socket.gethostbyname(socket.gethostname())
-        return f"no_header[{server_ip}]", None
+        return f"no_header[{server_ip}]", None, None
 
     try:
+        email = headers.get("X-Ms-Client-Principal-Name")
+        sub = headers.get("X-Ms-Client-Principal-Id")
+        name = None
         # X‑MS‑CLIENT‑PRINCIPALヘッダーの取得
         client_principal_encoded = headers.get("X-Ms-Client-Principal") or headers.get("X-MS-CLIENT-PRINCIPAL") 
         print(client_principal_encoded)
@@ -67,19 +70,15 @@ def get_sub_claim_or_ip():
             # GoogleのOIDCではclaimsオブジェクト内にsubクレームが存在するのが一般的です
             claims = principal.get("claims", {})
             print(claims)
+            claims = {claim["typ"]: claim["val"] for claim in claims}
+            print(claims)
 
-            if "email" in claims:
-                email = claims["sub"]
-            if "email" in principal:
-                email = principal["email"]
-            else:
-                email = None
+            if "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier" in claims:
+                name = claims["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier"]
 
-            if "sub" in claims:
-                return claims["sub"], email
-            # 場合によってはトップレベルにsubがある場合
-            if "sub" in principal:
-                return principal["sub"], email
+        if sub:
+            return sub, email, name
+
     except Exception as e:
         st.error(f"認証情報取得中にエラーが発生しました: {e}")
 
@@ -87,11 +86,11 @@ def get_sub_claim_or_ip():
     ip = headers.get("X-Forwarded-For") or headers.get("REMOTE_ADDR")
     print(headers.to_dict())
     if ip:
-        return ip, None
+        return ip, None, None
     else:
         # IPアドレスが取得できなかった場合、サーバーのIPアドレスを取得して返す
         server_ip = socket.gethostbyname(socket.gethostname())
-        return f"no_client_ip[{server_ip}]", None
+        return f"no_client_ip[{server_ip}]", None, None
 
 @dataclass
 class GPTHallucinatedFunctionCall:
@@ -1019,9 +1018,11 @@ st.title("Dual API Chat Interface")
 
 # サイドバー設定
 with st.sidebar:
-    principal,email = get_sub_claim_or_ip()
+    principal, email, name = get_sub_claim_or_ip()
     st.text("Principal: " + principal)
-    if email:
+    if name:
+        st.text("Name: " + name)
+    elif email:
         st.text("Email: " + email)
 
     model = models[st.selectbox(
