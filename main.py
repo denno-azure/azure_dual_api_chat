@@ -82,7 +82,7 @@ def get_sub_claim_or_ip():
     # X‑Forwarded‑ForまたはREMOTE_ADDRヘッダーからIPアドレスを取得する
     ip = headers.get("X-Forwarded-For") or headers.get("REMOTE_ADDR")
     if ip:
-        return ip, None
+        return headers, None
     else:
         # IPアドレスが取得できなかった場合、サーバーのIPアドレスを取得して返す
         server_ip = socket.gethostbyname(socket.gethostname())
