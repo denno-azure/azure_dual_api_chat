@@ -2,6 +2,7 @@ import os
 from os.path import dirname, join
 from dotenv import load_dotenv
 from io import BytesIO
+import socket
 import traceback
 import streamlit as st
 import openai
@@ -38,6 +39,54 @@ import concurrent.futures
 import customTools
 import serperTools
 import internetAccess
+
+def get_sub_claim_or_ip():
+    """
+    Azure App Service上でEasy Authを利用している場合、
+    X‑MS‑CLIENT‑PRINCIPALヘッダーには認証情報（Base64エンコードされたJSON）が含まれます。
+    この関数は、GoogleのOIDCを前提として、その認証情報からsubクレームを取得します。
+    いずれかの段階で失敗した場合は、クライアントのIPアドレスを返します。
+    """
+    headers = st.context.headers
+    if not headers:
+        # ヘッダーが見つからない場合はサーバーのIPアドレスを取得して返す
+        server_ip = socket.gethostbyname(socket.gethostname())
+        return f"no_header[{server_ip}]", None
+
+    try:
+        # X‑MS‑CLIENT‑PRINCIPALヘッダーの取得
+        client_principal_encoded = headers.get("X-MS-CLIENT-PRINCIPAL")
+        if client_principal_encoded:
+            # Base64デコード
+            decoded_bytes = base64.b64decode(client_principal_encoded)
+            # JSONパース
+            principal = json.loads(decoded_bytes.decode("utf-8"))
+            # GoogleのOIDCではclaimsオブジェクト内にsubクレームが存在するのが一般的です
+            claims = principal.get("claims", {})
+
+            if "email" in claims:
+                email = claims["sub"]
+            if "email" in principal:
+                email = principal["email"]
+            else:
+                email = None
+
+            if "sub" in claims:
+                return claims["sub"], email
+            # 場合によってはトップレベルにsubがある場合
+            if "sub" in principal:
+                return principal["sub"], email
+    except Exception as e:
+        st.error(f"認証情報取得中にエラーが発生しました: {e}")
+
+    # X‑Forwarded‑ForまたはREMOTE_ADDRヘッダーからIPアドレスを取得する
+    ip = headers.get("X-Forwarded-For") or headers.get("REMOTE_ADDR")
+    if ip:
+        return ip, None
+    else:
+        # IPアドレスが取得できなかった場合、サーバーのIPアドレスを取得して返す
+        server_ip = socket.gethostbyname(socket.gethostname())
+        return f"no_client_ip[{server_ip}]", None
 
 @dataclass
 class GPTHallucinatedFunctionCall:
@@ -965,6 +1014,11 @@ st.title("Dual API Chat Interface")
 
 # サイドバー設定
 with st.sidebar:
+    principal,email = get_sub_claim_or_ip()
+    st.text("Principal: " + principal)
+    if email:
+        st.text("Email: " + email)
+
     model = models[st.selectbox(
         "Model",
         models.keys()
