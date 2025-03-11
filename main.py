@@ -67,14 +67,13 @@ def get_sub_claim_or_ip():
             # JSONパース
             principal = json.loads(decoded_bytes.decode("utf-8"))
             print(principal)
-            # GoogleのOIDCではclaimsオブジェクト内にsubクレームが存在するのが一般的です
             claims = principal.get("claims", {})
             print(claims)
             claims = {claim["typ"]: claim["val"] for claim in claims}
             print(claims)
 
-            if "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier" in claims:
-                name = claims["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier"]
+            if "name" in claims:
+                name = claims["name"]
 
         if sub:
             return sub, email, name
