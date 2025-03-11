@@ -75,6 +75,8 @@ def get_sub_claim_or_ip():
             if "name" in claims:
                 name = claims["name"]
 
+        print(name)
+        print(email)
         if sub:
             return sub, email, name
 
