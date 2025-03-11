@@ -59,8 +59,6 @@ def get_sub_claim_or_ip():
         name = None
         # X‑MS‑CLIENT‑PRINCIPALヘッダーの取得
         client_principal_encoded = headers.get("X-Ms-Client-Principal") or headers.get("X-MS-CLIENT-PRINCIPAL") 
-        print(client_principal_encoded)
-        print(headers.get("X-Ms-Client-Principal"))
         if client_principal_encoded:
             # Base64デコード
             decoded_bytes = base64.b64decode(client_principal_encoded)
@@ -75,8 +73,6 @@ def get_sub_claim_or_ip():
             if "name" in claims:
                 name = claims["name"]
 
-        print(name)
-        print(email)
         if sub:
             return sub, email, name
 
@@ -814,7 +810,6 @@ class completion_streaming_digester:
     def generator(self):
     # メッセージ及びtool_callの断片を受け取りながらUIに反映し、最終的に完全なメッセージを復元する
         for chunk in self.stream:
-            print(chunk)
 
             if isinstance(chunk, ChatCompletionChunk):
                 # OpenAIのCompltion APIの場合
@@ -1020,11 +1015,12 @@ st.title("Dual API Chat Interface")
 # サイドバー設定
 with st.sidebar:
     principal, email, name = get_sub_claim_or_ip()
-    st.text("Principal: " + principal)
     if name:
         st.text("Name: " + name)
     elif email:
         st.text("Email: " + email)
+    else:
+        st.text("Principal: " + principal)
 
     model = models[st.selectbox(
         "Model",
