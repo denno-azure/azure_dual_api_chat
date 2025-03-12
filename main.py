@@ -35,10 +35,14 @@ from openai.types.beta.threads import (
     Annotation,
     Run
 )
+from azure.ai.inference.models._models import (
+    CompletionsUsage
+)
 import concurrent.futures
 import customTools
 import serperTools
 import internetAccess
+from cosmos_nosql import CosmosDB
 
 def get_sub_claim_or_ip():
     """
@@ -368,8 +372,8 @@ def pretty_print_message(key, message, with_token_summary=False):
     print(with_token_summary)
     if "file_search_results" in message.metadata:
         put_quotations(message.content, message.metadata["file_search_results"])
-    if with_token_summary and "token_summary" in message.metadata:
-        st.markdown(message.metadata["token_summary"])
+    if with_token_summary and "token_usage" in message.metadata:
+        st.markdown(format_token_summary(message.metadata["token_usage"]))
 
 def put_buttons(files, key=None) -> None:
     for i, file in enumerate(files):
@@ -623,9 +627,9 @@ def execute_api(model, selected_tools, conversation, options = {}):
                 })
                 full_response = response.choices[0].message.content
 
-            token_summary = get_token_summary(response, model)
-            st.markdown(token_summary)
-            metadata = {"token_summary": token_summary}
+            token_usage = get_token_usage(response, model)
+            st.markdown(format_token_summary(token_usage))
+            metadata = {"token_usage": token_usage}
             return full_response, metadata
 
         except Exception as e:
@@ -657,9 +661,9 @@ def execute_api(model, selected_tools, conversation, options = {}):
                 print(run)
                 file_search_results = get_file_search_results(thread_id, run.id)
                 put_quotations(content, file_search_results)
-                token_summary = get_token_summary(run, model)
-                st.markdown(token_summary)
-                metadata = {"token_summary": token_summary, "file_search_results": file_search_results}
+                token_usage = get_token_usage(run, model)
+                st.markdown(format_token_summary(token_usage))
+                metadata = {"token_usage": token_usage, "file_search_results": file_search_results}
                 return content, metadata
 
             except Exception as e:
@@ -701,9 +705,9 @@ def execute_api(model, selected_tools, conversation, options = {}):
                 print(messages)
                 content = messages.data[0].content
                 pretty_print_message("assist_msg", messages.data[0])
-                token_summary = get_token_summary(run, model)
-                st.markdown(token_summary)
-                metadata = {"token_summary": token_summary}
+                token_usage = get_token_usage(run, model)
+                st.markdown(format_token_summary(token_usage))
+                metadata = {"token_usage": token_usage}
                 return content, metadata
 
             except Exception as e:
@@ -755,9 +759,9 @@ def execute_api(model, selected_tools, conversation, options = {}):
                 else:
                     break
                 
-            token_summary = get_token_summary(response, model)
-            st.markdown(token_summary)
-            metadata = {"token_summary": token_summary}
+            token_usage = get_token_usage(response, model)
+            st.markdown(format_token_summary(token_usage))
+            metadata = {"token_usage": token_usage}
             return full_response, metadata
 
         except Exception as e:
@@ -787,17 +791,26 @@ def get_file_search_results(thread_id, run_id):
     print(run_step)
     return []
 
-def get_token_summary(response, model):
+def get_token_usage(response, model):
     if isinstance(response, ChatCompletion) or isinstance(response, Run):
         response = response.model_dump()
-    token_summary = ""
-    if "usage" in response and reduce(
-        lambda a, c:c in response["usage"] and a,
-        ["completion_tokens", "prompt_tokens", "total_tokens"], True):
+    if "usage" in response:
         usage = response["usage"]
+        if isinstance(usage, CompletionsUsage):
+            usage = {"completion_tokens": usage["completion_tokens"], "prompt_tokens": usage["prompt_tokens"], "total_tokens": usage["total_tokens"]}
+        usage["cost"] = (usage["prompt_tokens"] * model["pricing"]["in"] + usage["completion_tokens"] * model["pricing"]["out"]) / 1000000
+        usage["pricing"] = model["pricing"]
+        return usage
+    else:
+        return {}
+
+def format_token_summary(usage):
+    token_summary = ""
+    if reduce(
+        lambda a, c:c in usage and a,
+        ["completion_tokens", "prompt_tokens", "total_tokens", "cost"], True):
         token_summary = f"tokens in:{usage["prompt_tokens"]} out:{usage["completion_tokens"]} total:{usage["total_tokens"]}"
-        if "pricing" in model:
-            token_summary += f" cost: US${(usage["prompt_tokens"] * model["pricing"]["in"] + usage["completion_tokens"] * model["pricing"]["out"]) / 1000000}"
+        token_summary += f" cost: US${usage["cost"]}"
         token_summary = f"\n:violet-background[{token_summary}]"
 
     return token_summary 
@@ -900,6 +913,14 @@ def get_assistant(client, mode):
     return assistant.id
 
 # 初期化
+if "db" not in st.session_state:
+    st.session_state.db = CosmosDB(
+        os.getenv("COSMOS_NOSQL_HOST"),
+        os.getenv("COSMOS_NOSQL_MASTER_KEY"),
+        'ToDoList',
+        'Items'
+    )
+
 if "clients" not in st.session_state:
     st.session_state.clients = {
         "openai": AzureOpenAI(
@@ -938,7 +959,7 @@ models = {
     "pricing": {"in": 1.1, "out":4.4}
   },
   "GPT-4o": {
-    "model": "gpt-4o",
+    "model": "GPT-4o",
     "client": st.session_state.clients["openai"],
     "api_mode": "assistant",
     "assistant_id": st.session_state.assistants["gpt-4o"],
@@ -948,7 +969,7 @@ models = {
     "pricing": {"in": 2.5, "out":10}
   },
 #  "GPT-4o-nostream": {
-#    "model": "gpt-4o",
+#    "model": "GPT-4o",
 #    "client": st.session_state.clients["openai"],
 #    "api_mode": "assistant",
 #    "assistant_id": st.session_state.assistants["gpt-4o"],
@@ -958,7 +979,7 @@ models = {
 #    "pricing": {"in": 2.5, "out":10}
 #  },
   "GPT-4o-completion": {
-    "model": "gpt-4o",
+    "model": "GPT-4o",
     "client": st.session_state.clients["openai"],
     "api_mode": "completion",
     "assistant_id": st.session_state.assistants["gpt-4o"],
@@ -1015,10 +1036,10 @@ st.title("Dual API Chat Interface")
 # サイドバー設定
 with st.sidebar:
     principal, email, name = get_sub_claim_or_ip()
-    if name:
-        st.text("Name: " + name)
-    elif email:
-        st.text("Email: " + email)
+#    if name:
+#        st.text("Name: " + name)
+    if email:
+        st.text("User: " + email)
     else:
         st.text("Principal: " + principal)
 
@@ -1147,6 +1168,13 @@ if st.session_state.get("processing"):
             # レスポンスを履歴に追加
             conversation.add_message(model, "assistant", content, None, metadata)
             st.session_state.processing = False
+            st.session_state.db.log({
+                "principal": principal,
+                "email": email,
+                "name": name,
+                "model": model["model"],
+                "token_usage": metadata["token_usage"]
+            }, principal)
 
             # 最終的な内容で描画しなおすべきか？当面不要と判断。
             # placeholderを使って清書する事も考えたが、ラウザ側との同期に失敗し、前のコンテナのコンテンツが
