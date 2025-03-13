@@ -468,6 +468,12 @@ def handle_tool_calls(tool_calls: List[Dict], mode = "assistant") -> List[Dict]:
     """
     print(tool_calls)
     def add_output(outputs, tool_call_id, output, mode, fname = None):
+        # Expected a string with maximum length 1048576, but got a string with length 7415317 instead
+        # This model's maximum context length is 200000 tokens. However, your messages resulted in 416709 tokens
+        if len(output.encode('utf-8')) > 200000:
+            output = output[:200000]
+        while len(output.encode('utf-8')) > 200000:
+            output = output[:-10000]
         if mode == "assistant":
             # Assistant API用のtool_output
             outputs.append({
