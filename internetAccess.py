@@ -45,6 +45,20 @@ def fetch_page_content(url):
             return "URLにアクセスしたところ404 Not Foundでした。"
         else:
             return f"HTTPエラーが発生しました: {response.status_code}"
+    except requests.exceptions.Timeout as e:
+        return f"リクエストがタイムアウトしました: {e}"
+    except requests.exceptions.TooManyRedirects as e:
+        return "リダイレクト回数が多すぎる"
+    except requests.exceptions.InvalidURL as e:
+        return "URL の形式が不正"
+    except requests.exceptions.MissingSchema as e:
+        return "URL にスキーマ (http, https など) が含まれていない"
+    except requests.exceptions.InvalidHeader as e:
+        return "不正なヘッダーが指定された"
+    except requests.exceptions.ContentDecodingError as e:
+        return "レスポンスボディのデコードに失敗した"
+    except requests.exceptions.RequestException as e:
+        return f"その他のエラーが発生しました: {e}"
 
 def parse_html_content(url, query="", heading=None):
     """
