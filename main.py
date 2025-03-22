@@ -964,6 +964,15 @@ models = {
     "streaming": True,
     "pricing": {"in": 1.1, "out":4.4}
   },
+  "GPT-4.5-completion": {
+    "model": "GPT-4.5-preview",
+    "client": st.session_state.clients["openai"],
+    "api_mode": "completion",
+    "support_vision": True,
+    "support_tools": True,
+    "streaming": True,
+    "pricing": {"in": 75, "out":150}
+  },
   "GPT-4o": {
     "model": "GPT-4o",
     "client": st.session_state.clients["openai"],
@@ -988,7 +997,6 @@ models = {
     "model": "GPT-4o",
     "client": st.session_state.clients["openai"],
     "api_mode": "completion",
-    "assistant_id": st.session_state.assistants["gpt-4o"],
     "support_vision": True,
     "support_tools": True,
     "streaming": True,
