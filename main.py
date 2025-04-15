@@ -954,6 +954,16 @@ if "conversation" not in st.session_state:
 conversation = st.session_state.conversation 
 
 models = {
+  "o1": {
+    "model": "o1",
+    "client": st.session_state.clients["openai"],
+    "api_mode": "completion",
+    "support_vision": True,
+    "support_tools": True,
+    "support_reasoning_effort": True,
+    "streaming": False,
+    "pricing": {"in": 15, "out":60}
+  },
   "o3-mini": {
     "model": "o3-mini",
     "client": st.session_state.clients["openai"],
@@ -1002,16 +1012,6 @@ models = {
     "streaming": True,
     "pricing": {"in": 2.5, "out":10}
   },
-  "o1": {
-    "model": "o1",
-    "client": st.session_state.clients["openai"],
-    "api_mode": "completion",
-    "support_vision": True,
-    "support_tools": True,
-    "support_reasoning_effort": True,
-    "streaming": False,
-    "pricing": {"in": 15, "out":60}
-  },
   "DeepSeek R1": {
     "model": "DeepSeek-R1",
     "client": st.session_state.clients["deepseek"],
@@ -1045,7 +1045,7 @@ if 'switches' not in st.session_state:
     }
 
 # メインUI
-st.title("Dual API Chat Interface")
+st.subheader("IASA Chat Interface")
 
 # サイドバー設定
 with st.sidebar:
