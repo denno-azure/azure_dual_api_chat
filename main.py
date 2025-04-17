@@ -964,6 +964,15 @@ models = {
     "streaming": False,
     "pricing": {"in": 15, "out":60}
   },
+  "GPT-4.1-completion": {
+    "model": "gpt-4.1",
+    "client": st.session_state.clients["openai"],
+    "api_mode": "completion",
+    "support_vision": True,
+    "support_tools": True,
+    "streaming": True,
+    "pricing": {"in": 2, "out":8} # Azureでのpriceが見つからない。これはOpen AIのもの。
+  },
   "o3-mini": {
     "model": "o3-mini",
     "client": st.session_state.clients["openai"],
