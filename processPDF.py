@@ -317,6 +317,11 @@ def extract_pdf_content(pdf_url, page_range=None, image_id=None):
                     "outline_available": True,
                     "all_pages_extracted": False,
                     "outline": outline,
+                    "advice": (
+                        "ページ数が多いためまずブックマーク（アウトライン）のみを抽出しました。"
+                        "必要な箇所のページ番号を特定したら、"
+                        "page_rangeパラメータを指定して再度リクエストしてください。"
+                    ),
                     **meta
                 }
             else:
@@ -342,6 +347,13 @@ def extract_pdf_content(pdf_url, page_range=None, image_id=None):
                     "pages": extracted_pages,
                     "images": images,
                     "partial_extraction_reason": "NoOutlineFound_21+pages",
+                    "advice": (
+                        "アウトライン（ブックマーク）情報が⾒つからなかったため、冒頭20ページを抽出しました。"
+                        "この中に目次がある可能性があります。必要な箇所のページ番号を特定したら、"
+                        "page_rangeパラメータを指定して再度リクエストしてください。"
+                        " ただし、実際の物理ページ数と⽂書上のページ表記が異なる場合があることに注意してください。"
+                        " 前後数ページまとめて照合し、実際の位置を確認することをおすすめします。"
+                    ),
                     **meta
                 }
 
