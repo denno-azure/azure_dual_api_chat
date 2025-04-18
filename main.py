@@ -42,6 +42,7 @@ import concurrent.futures
 import customTools
 import serperTools
 import internetAccess
+import processPDF
 from cosmos_nosql import CosmosDB
 
 def get_sub_claim_or_ip():
@@ -107,7 +108,7 @@ class HallucinatedToolCalls:
 dotenv_path = join(dirname(__file__), ".env.local")
 load_dotenv(dotenv_path)
 
-tools=[{"type": "code_interpreter"}, {"type": "file_search"}, customTools.time, serperTools.run, serperTools.results, serperTools.scholar, serperTools.news, serperTools.places, internetAccess.html]
+tools=[{"type": "code_interpreter"}, {"type": "file_search"}, customTools.time, serperTools.run, serperTools.results, serperTools.scholar, serperTools.news, serperTools.places, internetAccess.html, processPDF.pdf]
 
 class StreamHandler(AssistantEventHandler):
     @override
@@ -485,7 +486,8 @@ def handle_tool_calls(tool_calls: List[Dict], mode = "assistant") -> List[Dict]:
             outputs.append({
                 "tool_call_id": tool_call_id,
                 "role": "tool",
-                "name": fname,
+# 2025/4/17 API Referenceではnameというパラメータは要求されていない
+#                "name": fname,
                 "content": output,
             })
 
@@ -593,6 +595,13 @@ def function_calling(fname, fargs):
                 query=fargs.get("query", "headings"),
                 heading=fargs.get("heading", None)
             )
+        elif fname == "extract_pdf_content":
+            st.toast("[extract pdf content]", icon="👀");
+            fresponse = json.dumps(processPDF.extract_pdf_content(
+                pdf_url=fargs.get("pdf_url"),
+                page_range=fargs.get("page_range", None),
+                image_id=fargs.get("image_id", None)
+            ))
         return fresponse
 
 # API実行モジュール
@@ -736,6 +745,7 @@ def execute_api(model, selected_tools, conversation, options = {}):
                 print(f"selected tools: {selected_tools}")
 
             full_response = ""
+            tool_call_count = 0
             while True:
                 print(f"args: {args}")
                 response = client.chat.completions.create(**args)
@@ -761,9 +771,13 @@ def execute_api(model, selected_tools, conversation, options = {}):
 
                 if hasattr(response_message, "tool_calls") and response_message.tool_calls:
                     messages += handle_tool_calls(response_message.tool_calls, "completion")
+                    tool_call_count += 1
 
                 else:
                     break
+
+                if tool_call_count > 20:
+                    raise Exception(f"tool callの連続実行回数が制限を超えました。回数: {tool_call_count}")
                 
             token_usage = get_token_usage(response, model)
             st.markdown(format_token_summary(token_usage))
@@ -888,10 +902,10 @@ def get_assistant(client, mode):
 
     if mode == "development":
         instructions=f"あなたは汎用的なアシスタントです。質問には簡潔かつ正確に答えてください。現在の日時は「{current_time}」であることを考慮し、時機にかなった回答を心がけます。あなたはオンラインで最新の情報を検索することができます。"
-        tools=[{"type": "code_interpreter"}, customTools.time, serperTools.run, serperTools.results, serperTools.news, serperTools.places, internetAccess.html]
+        tools=[{"type": "code_interpreter"}, customTools.time, serperTools.run, serperTools.results, serperTools.news, serperTools.places, internetAccess.html, processPDF.pdf]
     else:
         instructions=f"あなたは汎用的なアシスタントです。質問には簡潔かつ正確に答えてください。現在の日時は「{current_time}」であることを考慮し、時機にかなった回答を心がけます。あなたはオンラインで最新の情報を検索することができます。"
-        tools=[{"type": "code_interpreter"}, customTools.time, serperTools.run, serperTools.results, internetAccess.html]
+        tools=[{"type": "code_interpreter"}, customTools.time, serperTools.run, serperTools.results, internetAccess.html, processPDF.pdf]
 
     name=f"汎用アシスタント({mode})"
     assistant = None
@@ -1050,7 +1064,8 @@ if 'switches' not in st.session_state:
         "code_interpreter": True,
         "file_search": True,
         "get_google_results": True,
-        "parse_html_content": True
+        "parse_html_content": True,
+        "extract_pdf_content": True
     }
 
 # メインUI
