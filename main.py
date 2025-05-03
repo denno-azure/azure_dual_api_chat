@@ -987,6 +987,16 @@ models = {
     "streaming": True,
     "pricing": {"in": 2, "out":8} # Azureでのpriceが見つからない。これはOpen AIのもの。
   },
+  "o3": {
+    "model": "o3",
+    "client": st.session_state.clients["openai"],
+    "api_mode": "completion",
+    "support_vision": True,
+    "support_tools": True,
+    "support_reasoning_effort": True,
+    "streaming": True,
+    "pricing": {"in": 10, "out":40} # Azureでのpriceが見つからない。これはOpen AIのもの。
+  },
   "o3-mini": {
     "model": "o3-mini",
     "client": st.session_state.clients["openai"],
@@ -996,6 +1006,16 @@ models = {
     "support_reasoning_effort": True,
     "streaming": True,
     "pricing": {"in": 1.1, "out":4.4}
+  },
+  "o4-mini": {
+    "model": "o4-mini",
+    "client": st.session_state.clients["openai"],
+    "api_mode": "completion",
+    "support_vision": True,
+    "support_tools": True,
+    "support_reasoning_effort": True,
+    "streaming": True,
+    "pricing": {"in": 1.1, "out":4.4} # Azureでのpriceが見つからない。これはOpen AIのもの。
   },
   "GPT-4.5-completion": {
     "model": "GPT-4.5-preview",
