@@ -35,6 +35,11 @@ from openai.types.beta.threads import (
     Annotation,
     Run
 )
+from openai.types.responses import (
+    Response,
+    ResponseUsage,
+    ResponseFunctionToolCall
+)
 from azure.ai.inference.models._models import (
     CompletionsUsage
 )
@@ -108,7 +113,7 @@ class HallucinatedToolCalls:
 dotenv_path = join(dirname(__file__), ".env.local")
 load_dotenv(dotenv_path)
 
-tools=[{"type": "code_interpreter"}, {"type": "file_search"}, customTools.time, serperTools.run, serperTools.results, serperTools.scholar, serperTools.news, serperTools.places, internetAccess.html, processPDF.pdf]
+tools=[{"type": "code_interpreter"}, {"type": "file_search"}, { "type": "web_search_preview" }, customTools.time, serperTools.run, serperTools.results, serperTools.scholar, serperTools.news, serperTools.places, internetAccess.html, processPDF.pdf]
 
 class StreamHandler(AssistantEventHandler):
     @override
@@ -216,6 +221,14 @@ class ChatThread:
     def get_last_message(self):
         return self.messages[-1]
 
+    def get_last_message_id(self):
+        """現在記録されている最後のメッセージのidを返す"""
+        return len(self.messages) - 1
+
+    def get_messages_after(self, id):
+        """指定されたidより後のメッセージのリストを返す"""
+        return self.messages[(id + 1):]
+
     def get_thread_id(self):
         """
         Assistant API用のthread_idを返す。初めてAssistant APIを使うタイミングで
@@ -272,6 +285,8 @@ class ConversationManager:
         self.client = clients["openai"]
         self.thread = ChatThread(self.client)
         self.assistants = assistants
+        self.response_id = None
+        self.response_last_message_id = -1;
 
     def add_message(self, model, role, content, files=None, metadata={}):
         """メッセージをChatThreadに追加"""
@@ -301,15 +316,73 @@ class ConversationManager:
             })
         return messages
 
-    def create_attachments_for_assistant(self, files, tool_for_files):
-        """Assistant用のファイルアップロード"""
+    # Response APIにて、AIから回答があった際、response.idを記録し、そのidがどのメッセージまでに対応しているかを記録する
+    def set_response_id(self, response_id):
+        self.response_id = response_id
+        self.response_last_message_id = self.thread.get_last_message_id()
+
+    def get_response_history(self, model):
+        """Response API用にメッセージを変換"""
+        messages = []
+        for msg in self.thread.get_messages_after(self.response_last_message_id):
+            # Assistant API用のImageFileContentBlockは除く
+            content = [cont for cont in msg.content if not isinstance(cont, ImageFileContentBlock)]
+
+            # Visionサポートの無いモデルにImageを与えるとエラーになるので除く
+            if not model.get("support_vision", False):
+                content = [cont for cont in content if isinstance(cont, TextContentBlock)]
+
+            # classからdictに変換する
+            content = self.thread.content_to_content_param(content)
+
+            # ToDo: 本当はtypeや不要ブロックの除去はChatThread内に隠蔽すべき。
+
+            # "type"をResponse API向けに修正
+            inout = "output" if msg.role == "assistant" else "input"
+            content = [
+                {
+                    "text": cont["text"],
+                    "type": inout + "_text"
+                } if cont["type"] == "text" else
+                {
+                    "image_url": cont["image_url"]["url"],
+                    "type": "input_image"
+                } if cont["type"] == "image_url" else
+                {
+                    "file_id": cont["image_file"]["file_id"],
+                    "type": "input_image"
+                } if cont["type"] == "image_file" else
+                cont
+            for cont in content]
+
+            # filesをinput_fileとして連結
+            if msg.files:
+                content += [
+                    {
+                        "file_id": file["file_id"],
+                        "type": "input_file"
+                    }
+                for file in msg.files]
+
+            messages.append({
+                "role": "assistant" if msg.role == "assistant" else "user",
+                "content": content
+            })
+        return messages, self.response_id
+
+    def create_attachments(self, files, tool_for_files):
+        """Assistant, Response API用のファイルアップロード"""
         attachments = []
         for file in files:
             file.seek(0)
             response = self.client.files.create(
                 file=file,
+                # Response APIのためにはpurpose="user_data"が望ましいが、2025/5/11現在未対応 'Invalid value for purpose.'
+                # "assistants"のままだとResponse APIで、'APIError: An error occurred while processing the request.'
+                # 結局Response APIのinput_fileとしては使えない
                 purpose="assistants"
             )
+            # Response APIではtool_for_filesは無視する想定
             attachments.append(
                     {
                         "file_id": response.id,
@@ -369,8 +442,8 @@ def pretty_print_message(key, message, with_token_summary=False):
             value, files = parse_annotations(cont.text.value, cont.text.annotations)
             st.markdown(value, unsafe_allow_html=True)
             put_buttons(files, f"hist{key}-{j}")
-    print(message)
-    print(with_token_summary)
+#    print(message)
+#    print(with_token_summary)
     if "file_search_results" in message.metadata:
         put_quotations(message.content, message.metadata["file_search_results"])
     if with_token_summary and "token_usage" in message.metadata:
@@ -432,8 +505,8 @@ def get_file_info(file_id: str) -> bytes:
 
 def parse_annotations(value: str, annotations: List[Annotation]):
     files = []
-    print(value)
-    print(annotations)
+#    print(value)
+    print(f"annotations={annotations}")
     for (
         index,
         annotation,
@@ -481,6 +554,13 @@ def handle_tool_calls(tool_calls: List[Dict], mode = "assistant") -> List[Dict]:
                 "tool_call_id": tool_call_id,
                 "output": output
             })
+        elif mode == "response":
+            # Response API用のtool_output
+            outputs.append({
+                "type": "function_call_output",
+                "call_id": tool_call_id,
+                "output": output
+            })
         else:
             # Completion API用のtool_output
             outputs.append({
@@ -494,7 +574,13 @@ def handle_tool_calls(tool_calls: List[Dict], mode = "assistant") -> List[Dict]:
     tool_outputs = []
 
     for tool in tool_calls:
-        function = tool.function
+        # Response APIではtool_callsの各要素はfunctionをプロパティとして持たず、直にnameやargumentsを持つ
+        if hasattr(tool, "function"):
+            function = tool.function
+            call_id = tool.id
+        else:
+            function = tool
+            call_id = tool.call_id
         fname = function.name
 # 並列ツール呼び出しのテスト用データ（テスト時に都合よく発生してくれないので）
 #        function.name = "multi_tool_use.parallel"
@@ -519,7 +605,7 @@ def handle_tool_calls(tool_calls: List[Dict], mode = "assistant") -> List[Dict]:
                         function_calling,
                         tool_use.recipient_name.rsplit('.', 1)[-1],
                         tool_use.parameters
-                    ): {"id": tool.id, "fname": tool_use.recipient_name.rsplit('.', 1)[-1]}
+                    ): {"id": call_id, "fname": tool_use.recipient_name.rsplit('.', 1)[-1]}
                     for tool_use in tool_uses
                 }
 
@@ -543,7 +629,7 @@ def handle_tool_calls(tool_calls: List[Dict], mode = "assistant") -> List[Dict]:
         else:
               # 順次ツール呼び出し
               fresponse = function_calling(fname, fargs)
-              add_output(tool_outputs, tool.id, fresponse, mode, fname)
+              add_output(tool_outputs, call_id, fresponse, mode, fname)
 
     print("tool_outputs:")
     print(tool_outputs)
@@ -607,6 +693,7 @@ def function_calling(fname, fargs):
 # API実行モジュール
 def execute_api(model, selected_tools, conversation, options = {}):
 
+    print(model)
     thread = conversation.thread
     client = model["client"]
 
@@ -645,6 +732,7 @@ def execute_api(model, selected_tools, conversation, options = {}):
             token_usage = get_token_usage(response, model)
             st.markdown(format_token_summary(token_usage))
             metadata = {"token_usage": token_usage}
+            conversation.add_message(model, "assistant", full_response, None, metadata)
             return full_response, metadata
 
         except Exception as e:
@@ -659,7 +747,6 @@ def execute_api(model, selected_tools, conversation, options = {}):
 
         if model["support_tools"]: # selected_toolsが空の場合もassistant設定を上書き
             args["tools"] = selected_tools
-            print(f"selected tools: {selected_tools}")
 
         if model["streaming"]:
             # ストリーミング対応のAssistant API実行
@@ -679,6 +766,7 @@ def execute_api(model, selected_tools, conversation, options = {}):
                 token_usage = get_token_usage(run, model)
                 st.markdown(format_token_summary(token_usage))
                 metadata = {"token_usage": token_usage, "file_search_results": file_search_results}
+                conversation.add_message(model, "assistant", content, None, metadata)
                 return content, metadata
 
             except Exception as e:
@@ -723,11 +811,76 @@ def execute_api(model, selected_tools, conversation, options = {}):
                 token_usage = get_token_usage(run, model)
                 st.markdown(format_token_summary(token_usage))
                 metadata = {"token_usage": token_usage}
+                conversation.add_message(model, "assistant", content, None, metadata)
                 return content, metadata
 
             except Exception as e:
                 st.error(f"Assistant APIエラー")
                 raise
+
+    elif model["api_mode"] == "response":
+        # Response API実行処理
+        # ======== 2025/5/6 現時点でも、web_search_preview, image_url pointing to an internet address等が実装されていない =======
+        # https://learn.microsoft.com/en-us/azure/ai-services/openai/how-to/responses?tabs=python-secure
+
+        input, response_id = conversation.get_response_history(model)
+        try:
+            args = {"model": model["model"], "input": input} | options
+
+            if response_id:
+                args["previous_response_id"] = response_id
+
+            if model["support_tools"] and selected_tools:
+                args["tools"] = prepare_tools_for_response_api(selected_tools)
+
+            full_response = ""
+            tool_call_count = 0
+            while True:
+                print(f"args: {args}")
+
+                if model["streaming"]:
+                    # ストリーミング対応のResponse API実行
+                    with client.responses.stream(**args) as stream:
+                        digester = response_streaming_digester(stream)
+                        full_response += st.write_stream(digester.generator)
+                        stream.until_done()
+                    response = digester.response
+
+                else:
+                    # 非ストリーミング対応のResponse API実行
+                    response = client.responses.create(**args)
+                    st.write(response.output_text)
+                    full_response += response.output_text
+
+                print(response)
+
+                # streaming時に得られるParsedResponseFunctionToolCallをResponseFunctionToolCallにcastする
+                # 余計なプロパティparsed_argumentsがあるとエラーが出るので
+                tool_calls = [
+                    ResponseFunctionToolCall(arguments=mes.arguments, call_id=mes.call_id, name=mes.name, type=mes.type, id=mes.id, status=mes.status)
+                    for mes in response.output if mes.type == 'function_call'
+                ]
+                if tool_calls:
+                    args["input"] += tool_calls
+                    args["input"] += handle_tool_calls(tool_calls, "response")
+                    tool_call_count += 1
+
+                else:
+                    break
+
+                if tool_call_count > 20:
+                    raise Exception(f"tool callの連続実行回数が制限を超えました。回数: {tool_call_count}")
+
+            token_usage = get_token_usage(response, model)
+            st.markdown(format_token_summary(token_usage))
+            metadata = {"token_usage": token_usage}
+            conversation.add_message(model, "assistant", full_response, None, metadata)
+            conversation.set_response_id(response.id)
+            return full_response, metadata
+
+        except Exception as e:
+            st.error(f"Response APIエラー")
+            raise
 
     else:
         # Completion API実行処理
@@ -735,14 +888,12 @@ def execute_api(model, selected_tools, conversation, options = {}):
         try:
             args = {"model": model["model"], "messages": messages} | options
 
-            print(model)
             if model["streaming"]:
                 args["stream"] = True
                 args["stream_options"] = {"include_usage": True}
 
             if model["support_tools"] and selected_tools:
                 args["tools"] = selected_tools
-                print(f"selected tools: {selected_tools}")
 
             full_response = ""
             tool_call_count = 0
@@ -765,7 +916,6 @@ def execute_api(model, selected_tools, conversation, options = {}):
                     if hasattr(response_message, "content") and response_message.content:
                         st.write(response_message.content)
                         full_response += response_message.content
-                    print(response)
 
                 messages.append(response_message.model_dump())
 
@@ -782,11 +932,17 @@ def execute_api(model, selected_tools, conversation, options = {}):
             token_usage = get_token_usage(response, model)
             st.markdown(format_token_summary(token_usage))
             metadata = {"token_usage": token_usage}
+            conversation.add_message(model, "assistant", full_response, None, metadata)
             return full_response, metadata
 
         except Exception as e:
             st.error(f"Completion APIエラー")
             raise
+
+# Response APIのfunction定義はそれ以前と異なり、"function"プロパティ下にあった定義が、rootに移動しているので変換する
+def prepare_tools_for_response_api(tools):
+    tools = [({"type": "function"} | t["function"]) if t["type"] == "function" else t for t in tools]
+    return tools
 
 def get_file_search_results(thread_id, run_id):
     client = st.session_state.clients["openai"]
@@ -814,10 +970,12 @@ def get_file_search_results(thread_id, run_id):
 def get_token_usage(response, model):
     if isinstance(response, ChatCompletion) or isinstance(response, Run):
         response = response.model_dump()
-    if "usage" in response:
-        usage = response["usage"]
+    usage = hasattr(response, 'usage') and response.usage or response.get("usage", None)
+    if usage:
         if isinstance(usage, CompletionsUsage):
             usage = {"completion_tokens": usage["completion_tokens"], "prompt_tokens": usage["prompt_tokens"], "total_tokens": usage["total_tokens"]}
+        elif isinstance(usage, ResponseUsage):
+            usage = {"completion_tokens": usage.output_tokens, "prompt_tokens": usage.input_tokens, "total_tokens": usage.total_tokens}
         usage["cost"] = (usage["prompt_tokens"] * model["pricing"]["in"] + usage["completion_tokens"] * model["pricing"]["out"]) / 1000000
         usage["pricing"] = model["pricing"]
         return usage
@@ -834,6 +992,30 @@ def format_token_summary(usage):
         token_summary = f"\n:violet-background[{token_summary}]"
 
     return token_summary 
+
+class response_streaming_digester:
+    def __init__(self, stream):
+        self.stream = stream
+        self.response = {}
+
+    def generator(self):
+    # メッセージ及びtool_callの断片を受け取りながらUIに反映し、最終的に完全なメッセージを復元する
+    # 参考: https://platform.openai.com/docs/guides/structured-outputs?api-mode=responses
+#        print(self.stream)
+        for event in self.stream:
+#            print(f"event.type={event.type} event={event}\n", end="")
+            if event.type == "response.refusal.delta":
+                print(event.delta, end="")
+            elif event.type == "response.output_text.delta":
+#                print(event.delta, end="")
+                yield event.delta
+            elif event.type == "response.error":
+                print(event.error, end="")
+            elif event.type == "response.completed":
+                print("Stream completed")
+                # print(event.response.output)
+
+        self.response = self.stream.get_final_response()
 
 class completion_streaming_digester:
     def __init__(self, stream):
@@ -887,7 +1069,7 @@ class completion_streaming_digester:
                     self.response[key] = value
         # 上記マージ作業の都合上dictで表現された配列をlistに変換する
         choices = []
-        print(self.response)
+#        print(self.response)
         for ci, cvalue in sorted(self.response["choices"].items(), key=lambda x:x[0]):
             tool_calls = []
             for ti, tvalue in sorted(cvalue["tool_calls"].items(), key=lambda x:x[0]):
@@ -946,7 +1128,7 @@ if "clients" not in st.session_state:
         "openai": AzureOpenAI(
             azure_endpoint = os.getenv("ENDPOINT_URL"),
             api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            api_version="2024-12-01-preview"
+            api_version="2025-03-01-preview"
         ),
         "deepseek": ChatCompletionsClient(
             endpoint=os.getenv("DEEPSEEK_ENDPOINT_URL"),
@@ -968,6 +1150,15 @@ if "conversation" not in st.session_state:
 conversation = st.session_state.conversation 
 
 models = {
+  "GPT-4.1-response": {
+    "model": "gpt-4.1",
+    "client": st.session_state.clients["openai"],
+    "api_mode": "response",
+    "support_vision": True,
+    "support_tools": True,
+    "streaming": True,
+    "pricing": {"in": 2, "out":8} # Azureでのpriceが見つからない。これはOpen AIのもの。
+  },
   "o1": {
     "model": "o1",
     "client": st.session_state.clients["openai"],
@@ -1083,6 +1274,7 @@ if 'switches' not in st.session_state:
     st.session_state.switches = {
         "code_interpreter": True,
         "file_search": True,
+        "web_search_preview": True,
         "get_google_results": True,
         "parse_html_content": True,
         "extract_pdf_content": True
@@ -1120,17 +1312,20 @@ with st.sidebar:
 
     uploaded_files = None
     image_files = None
-    if model["api_mode"] == "assistant":
+    if model["api_mode"] == "assistant" or model["api_mode"] == "response":
         uploaded_files = st.file_uploader(
             "ファイルアップロード",
             accept_multiple_files=True,
             key = f"file_uploader_{st.session_state.uploader_key}"
         )
-        tool_for_files = st.selectbox(
-            "ファイルの用途",
-            ["file_search", "code_interpreter"]
-        )
-        st.session_state.switches[tool_for_files] = True
+        if model["api_mode"] == "assistant":
+            tool_for_files = st.selectbox(
+                "ファイルの用途",
+                ["file_search", "code_interpreter"]
+            )
+            st.session_state.switches[tool_for_files] = True
+        else:
+            tool_for_files = "file_search"
 
     if model.get("support_vision", False):
         image_files = st.file_uploader(
@@ -1144,8 +1339,17 @@ with st.sidebar:
             ["auto", "high", "low"]
         )
 
-    # "code_interpreter", "file_search"を使えるのはassistantの時だけ
-    if model["api_mode"] != "assistant":
+    if model["api_mode"] == "assistant":
+        tools = [tool for tool in tools if tool.get("type", None) in ["function", "code_interpreter", "file_search"]]
+    elif model["api_mode"] == "response":
+        tools = [tool for tool in tools if tool.get("type", None) in ["function"]
+# web_search_previewは現在実装されておらず、file_searchを有効化するにはvector storeの管理機能が必要
+#        tools = [tool for tool in tools if tool.get("type", None) in ["function", "web_search_preview", "file_search"]
+# web_search_previewが使えるようになれば、これらのツールは不要になる
+        #            and (tool.get("type", None) != "function" or tool["function"]["name"] not in ["get_google_results", "parse_html_content", "extract_pdf_content"])
+            ]
+    else:
+        # "completion", "inference"で使えるのはfunctionだけ
         tools = [tool for tool in tools if tool.get("type", None) == "function"]
 
     # 表示用ラベル生成
@@ -1176,14 +1380,13 @@ with st.sidebar:
         ]
     else:
         selected_tools = []
-    print(selected_tools)
 
 if content := st.chat_input("メッセージを入力"):
         # ファイル処理
         attachments = []
         if uploaded_files:
             st.toast("ファイルをアップロードします")
-            attachments = conversation.create_attachments_for_assistant(uploaded_files, tool_for_files)
+            attachments = conversation.create_attachments(uploaded_files, tool_for_files)
             st.toast("アップロード完了")
             st.session_state.uploader_key += 1 # 選択されたファイルをクリア
 
@@ -1224,7 +1427,6 @@ if st.session_state.get("processing"):
                 )
         
             # レスポンスを履歴に追加
-            conversation.add_message(model, "assistant", content, None, metadata)
             st.session_state.processing = False
             st.session_state.db.log({
                 "principal": principal,

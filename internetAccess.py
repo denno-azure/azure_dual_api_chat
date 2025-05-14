@@ -7,6 +7,7 @@ html = {
     "function": {
         "name": "parse_html_content",
         "description": "指定されたURLからHTMLコンテンツを取得し、特定の情報を抽出する。特定のヘッディングセクションのテキストも抽出可能。",
+        "strict": True,
         "parameters": {
             "type": "object",
             "properties": {
@@ -21,11 +22,11 @@ html = {
                 },
                 "heading": {
                     "type": "string",
-                    "description": "特定のヘッディングセクションからのテキストを抽出するために必要。queryがsection_textまたはsection_htmlの場合に使用。",
-                    "nullable": True
+                    "description": "特定のヘッディングセクションからのテキストを抽出するために必要。queryがsection_textまたはsection_htmlの場合に使用。queryがそれ以外の場合は空文字列を指定すること。",
                 }
             },
-            "required": ["url", "query"]
+            "required": ["url", "query", "heading"],
+            "additionalProperties": False
         }
     }
 }
