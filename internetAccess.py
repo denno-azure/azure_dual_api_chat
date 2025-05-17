@@ -22,7 +22,7 @@ html = {
                 },
                 "heading": {
                     "type": "string",
-                    "description": "特定のヘッディングセクションからのテキストを抽出するために必要。queryがsection_textまたはsection_htmlの場合に使用。queryがそれ以外の場合は空文字列を指定すること。",
+                    "description": "特定のヘッディングセクションからのテキストを抽出するために必要。queryがsection_htmlの場合に使用。queryがそれ以外の場合は空文字列を指定すること。",
                 }
             },
             "required": ["url", "query", "heading"],
@@ -31,6 +31,26 @@ html = {
     }
 }
 
+def decode_text(response):
+    # 生バイナリ
+    raw = response.content
+
+    # サーバーヘッダ確認
+    content_type = response.headers.get("Content-Type", "").lower()
+
+    # サーバーが明示的に charset を指定しているかどうか
+    if "charset=" in content_type:
+        # サーバーが指定した(例: iso-8859-1, utf-8, etc.)
+        # → 強制的にそれを信じるなら下記のように…
+        used_enc = response.encoding
+    else:
+        # サーバー無指定 → requests は内部的に r.encoding='ISO-8859-1' をセットしてるが
+        # もし中国語や日本語など、そのまま確定するには怪しい… → apparent_encoding を採用する
+        used_enc = response.apparent_encoding
+
+    text_body = raw.decode(used_enc, errors='replace')
+    return text_body
+
 def fetch_page_content(url):
     """
     指定されたURLからページ内容を取得する
@@ -38,7 +58,7 @@ def fetch_page_content(url):
     try:
         response = requests.get(url)
         response.raise_for_status()  # エラーがあれば発生させる
-        return response.text
+        return decode_text(response)
     except requests.exceptions.ConnectionError:
         return "接続エラーが発生しました。URLが正しいことを確認してください。"
     except requests.exceptions.HTTPError as e:
@@ -117,7 +137,7 @@ def parse_html_content(url, query="", heading=None):
             return ''.join([str(element) for element in elements]).strip()
 
         else:
-            return "Heading must be specified for section_text query."
+            return "Heading must be specified for section_html query."
 
     else:
         return "Invalid query parameter"
