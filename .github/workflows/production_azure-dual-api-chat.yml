@@ -5,6 +5,9 @@
 name: Build and deploy Python app to Azure Web App - azure-dual-api-chat
 
 on:
+  workflow_run:
+    workflows: ["Sync upstream to main and production"]
+    types: [completed]
   push:
     branches:
       - production
@@ -73,4 +76,5 @@ jobs:
         with:
           app-name: 'azure-dual-api-chat'
           slot-name: 'Production'
+
           
