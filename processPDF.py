@@ -3,7 +3,7 @@ import tempfile
 import pdfplumber
 import hashlib
 import base64
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 import re
 import os
 
@@ -113,16 +113,15 @@ def extract_headings_and_paragraphs(text, char_data=None):
 
 def extract_bookmarks(pdf_path):
     """
-    PyPDF2でブックマーク(アウトライン)を取得。
+    PyPDF3でブックマーク(アウトライン)を取得。
     Multi-levelの場合はlevelを深掘りして再帰的に構造を返す。
     """
     try:
-        # Readerのバージョンによっては .outline でなく get_outlines() など使う場合も
+        # pypdf3では .outlines を優先。互換用に .outline もフォールバックで試す。
         reader = PdfReader(pdf_path)
-        outlines = getattr(reader, "outline", None)
+        outlines = getattr(reader, "outlines", None)
         if outlines is None:
-            # 旧バージョンだと get_outlines() か getOutlines()
-            outlines = reader.get_outlines()
+            outlines = getattr(reader, "outline", None)
     except Exception:
         return []
 

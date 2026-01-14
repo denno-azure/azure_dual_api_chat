@@ -48,6 +48,9 @@ def decode_text(response):
         # もし中国語や日本語など、そのまま確定するには怪しい… → apparent_encoding を採用する
         used_enc = response.apparent_encoding
 
+    if not used_enc:
+        used_enc = 'utf-8'
+
     text_body = raw.decode(used_enc, errors='replace')
     return text_body
 
