@@ -1,7 +1,5 @@
 import json
-from urllib.parse import quote
 import streamlit.components.v1 as components
-import streamlit as st
 
 def login_state_extender(email):
     # email を JS に埋め込む（必ず JSON エスケープ）
@@ -270,9 +268,4 @@ def login_state_extender(email):
 </body>
 </html>
 """
-    data_url = "data:text/html;charset=utf-8," + quote(html)
-    if hasattr(st, "iframe"):
-        # after v1.56.0
-        st.iframe(data_url, height=80) 
-    else:
-        components.html(html, height=80)
+    components.html(html, height=80)
