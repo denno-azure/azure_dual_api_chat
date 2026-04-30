@@ -55,6 +55,7 @@ import internetAccess
 import processPDF
 from cosmos_nosql import CosmosDB
 from keepalive import login_state_extender
+from session_storage_bridge import session_storage_bridge
 
 ContentBlock = ImageFileContentBlock | ImageURLContentBlock | TextContentBlock | ResponseCodeInterpreterToolCall
 
@@ -122,6 +123,163 @@ dotenv_path = join(dirname(__file__), ".env.local")
 load_dotenv(dotenv_path)
 
 tools=[{"type": "code_interpreter"}, {"type": "file_search"}, {"type": "web_search_preview" }, {"type": "image_generation"}, customTools.time, serperTools.run, serperTools.results, serperTools.scholar, serperTools.news, serperTools.places, internetAccess.html, processPDF.pdf]
+SESSION_SNAPSHOT_KEY = "iasa_chat_snapshot_v1"
+SESSION_SNAPSHOT_TRIM_STEP_BYTES = 100 * 1024
+
+
+def _snapshot_log(event, **kwargs):
+    important_events = {
+        "restore.apply_done",
+        "restore.principal_mismatch",
+        "bridge.mode",
+        "save.queue_start",
+        "save.process_bridge_response",
+        "save.process_wait_init",
+        "save.failed",
+    }
+    if event not in important_events:
+        return
+    try:
+        print(f"[snapshot] {event} {json.dumps(kwargs, ensure_ascii=False)}")
+    except Exception:
+        print(f"[snapshot] {event} {kwargs}")
+
+
+def _safe_json_value(value):
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {str(k): _safe_json_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_safe_json_value(v) for v in value]
+    return str(value)
+
+
+def serialize_snapshot(principal, conversation):
+    ui_state_keys = [
+        "selected_model_name",
+        "reasoning_effort",
+        "tool_for_files",
+        "detail_level",
+        "streaming",
+        "show_code_and_logs",
+        "tool_choice",
+    ]
+    ui_state = {key: _safe_json_value(st.session_state.get(key)) for key in ui_state_keys if key in st.session_state}
+    ui_state["switches"] = _safe_json_value(st.session_state.get("switches", {}))
+
+    payload = {
+        "version": 1,
+        "principal": principal,
+        "ui_state": ui_state,
+        "conversation": conversation.to_snapshot_dict(),
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _apply_loaded_snapshot(principal, payload_json, clients, assistants):
+    if not payload_json:
+        return
+
+    try:
+        payload = json.loads(payload_json)
+    except Exception:
+        return
+
+    if payload.get("principal") != principal:
+        _snapshot_log("restore.principal_mismatch", saved_principal=payload.get("principal"), current_principal=principal)
+        st.session_state._snapshot_clear_pending = True
+        st.session_state.need_rerun = True
+        return
+
+    for key, value in payload.get("ui_state", {}).items():
+        st.session_state[key] = value
+
+    conv_raw = payload.get("conversation", {})
+    conversation = ConversationManager.from_snapshot_dict(conv_raw, clients, assistants)
+    if not conversation:
+        return
+
+    st.session_state.conversation = conversation
+    st.session_state.processing = False
+    _snapshot_log(
+        "restore.apply_done",
+        restored_messages=len(conversation.thread.messages),
+        response_id=conversation.response_id,
+        response_last_message_id=conversation.response_last_message_id
+    )
+
+
+def queue_snapshot_save(principal, conversation):
+    _snapshot_log(
+        "save.queue_start",
+        principal=principal,
+        message_count=len(conversation.thread.messages),
+        response_id=conversation.response_id,
+        response_last_message_id=conversation.response_last_message_id
+    )
+    payload_json = serialize_snapshot(principal, conversation)
+    st.session_state._snapshot_save_pending = {
+        "principal": principal,
+        "payload_json": payload_json
+    }
+    st.session_state.need_rerun = True
+
+
+def run_snapshot_bridge(principal, clients, assistants):
+    pending = st.session_state.get("_snapshot_save_pending")
+    mode = "idle"
+    payload_json = ""
+
+    if st.session_state.get("_snapshot_clear_pending"):
+        mode = "clear"
+    elif not st.session_state.get("_snapshot_restore_completed"):
+        mode = "load"
+    elif isinstance(pending, dict):
+        if pending.get("principal") != principal:
+            st.session_state._snapshot_save_pending = None
+            mode = "idle"
+        else:
+            mode = "save"
+            payload_json = pending.get("payload_json", "{}")
+
+    if mode != "idle":
+        _snapshot_log("bridge.mode", mode=mode)
+
+    status = session_storage_bridge(
+        mode=mode,
+        storage_key=SESSION_SNAPSHOT_KEY,
+        payload_json=payload_json,
+        trim_step_bytes=SESSION_SNAPSHOT_TRIM_STEP_BYTES,
+        key="session_storage_bridge_single",
+    )
+
+    if mode == "idle":
+        return
+
+    if not isinstance(status, dict):
+        return
+    if status.get("status") == "init":
+        if mode == "save":
+            _snapshot_log("save.process_wait_init")
+        return
+
+    if mode == "clear":
+        st.session_state._snapshot_clear_pending = False
+        return
+
+    if mode == "load":
+        st.session_state._snapshot_restore_completed = True
+        if status.get("ok") and status.get("found"):
+            _apply_loaded_snapshot(principal, status.get("payload_json"), clients, assistants)
+        return
+
+    if mode == "save":
+        _snapshot_log("save.process_bridge_response", status=status)
+        st.session_state._snapshot_save_pending = None
+        if status.get("ok") is False:
+            _snapshot_log("save.failed", status=status.get("status", "unknown"))
+            st.toast(f"状態保存に失敗しました: {status.get('status', 'unknown')}", icon="⚠️")
 
 class StreamHandler(AssistantEventHandler):
     @override
@@ -198,6 +356,77 @@ class ChatMessage:
     content: List[ContentBlock]
     files: List[str] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+
+    @staticmethod
+    def _serialize_content_block(cont):
+        if isinstance(cont, TextContentBlock):
+            return {
+                "type": "text",
+                "text": cont.text.value
+            }
+
+        if isinstance(cont, ImageURLContentBlock):
+            url = cont.image_url.url
+            if isinstance(url, str) and url.startswith("data:"):
+                return None
+            return {
+                "type": "image_url",
+                "url": url,
+                "detail": getattr(cont.image_url, "detail", "auto")
+            }
+
+        return None
+
+    @staticmethod
+    def _deserialize_content_block(payload):
+        ctype = payload.get("type")
+        if ctype == "text":
+            return TextContentBlock(type="text", text=Text(value=payload.get("text", ""), annotations=[]))
+        if ctype == "image_url":
+            return ImageURLContentBlock(
+                type="image_url",
+                image_url=ImageURL(url=payload.get("url", ""), detail=payload.get("detail", "auto"))
+            )
+        return None
+
+    def to_snapshot_dict(self):
+        serialized_content = []
+        for cont in self.content:
+            serial = self._serialize_content_block(cont)
+            if serial:
+                serialized_content.append(serial)
+
+        metadata = {}
+        if isinstance(self.metadata, dict) and isinstance(self.metadata.get("token_usage"), dict):
+            metadata["token_usage"] = _safe_json_value(self.metadata.get("token_usage"))
+
+        return {
+            "role": self.role,
+            "content": serialized_content,
+            "files": [],
+            "metadata": metadata
+        }
+
+    @classmethod
+    def from_snapshot_dict(cls, payload):
+        if not isinstance(payload, dict):
+            payload = {}
+        content = []
+        for cont in payload.get("content", []):
+            block = cls._deserialize_content_block(cont)
+            if block:
+                content.append(block)
+
+        metadata = payload.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        return cls(
+            role=payload.get("role", "user"),
+            content=content,
+            files=[],
+            metadata=metadata
+        )
 
 # スレッド管理クラス
 class ChatThread:
@@ -294,6 +523,24 @@ class ChatThread:
                 raise ValueError(f"未知のコンテンツブロックの type: {block.type}")
         return content_param
 
+    def to_snapshot_dict(self):
+        return {
+            "thread_id": self.thread_id,
+            "messages": [m.to_snapshot_dict() for m in self.messages]
+        }
+
+    def load_snapshot_dict(self, payload):
+        if not isinstance(payload, dict):
+            return False
+
+        messages_raw = payload.get("messages", [])
+        if not isinstance(messages_raw, list):
+            return False
+
+        self.thread_id = payload.get("thread_id")
+        self.messages = [ChatMessage.from_snapshot_dict(m) for m in messages_raw]
+        return True
+
 # セッション管理クラス
 class ConversationManager:
     def __init__(self, clients, assistants):
@@ -307,6 +554,36 @@ class ConversationManager:
     def add_message(self, model, role, content, files=None, metadata={}):
         """メッセージをChatThreadに追加"""
         self.thread.add_message(model, role, content, files, metadata)
+
+    def to_snapshot_dict(self):
+        thread_payload = self.thread.to_snapshot_dict()
+        return {
+            "thread_id": thread_payload.get("thread_id"),
+            "response_id": self.response_id,
+            "response_last_message_id": self.response_last_message_id,
+            "code_interpreter_file_ids": self.code_interpreter_file_ids,
+            "messages": thread_payload.get("messages", [])
+        }
+
+    @classmethod
+    def from_snapshot_dict(cls, payload, clients, assistants):
+        if not isinstance(payload, dict):
+            return None
+
+        conversation = cls(clients, assistants)
+        ok = conversation.thread.load_snapshot_dict({
+            "thread_id": payload.get("thread_id"),
+            "messages": payload.get("messages", [])
+        })
+        if not ok:
+            return None
+
+        conversation.response_id = payload.get("response_id")
+        conversation.response_last_message_id = payload.get("response_last_message_id", -1)
+        conversation.code_interpreter_file_ids = payload.get("code_interpreter_file_ids", [])
+        if not isinstance(conversation.code_interpreter_file_ids, list):
+            conversation.code_interpreter_file_ids = []
+        return conversation
 
     def get_completion_messages(self, model, text_only=False):
         """Completion API用にメッセージを変換"""
@@ -1704,13 +1981,30 @@ if 'switches' not in st.session_state:
     }
 if "need_rerun" not in st.session_state:
     st.session_state.need_rerun = False
+if "streaming" not in st.session_state:
+    st.session_state.streaming = True
+if "show_code_and_logs" not in st.session_state:
+    st.session_state.show_code_and_logs = False
+if "tool_choice" not in st.session_state:
+    st.session_state.tool_choice = True
+
+principal, email, name = get_sub_claim_or_ip()
 
 # メインUI
 st.subheader("IASA Chat Interface")
+st.markdown("""
+<style>
+.st-key-session_storage_bridge_single {
+    display: none !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # サイドバー設定
 with st.sidebar:
-    principal, email, name = get_sub_claim_or_ip()
+    run_snapshot_bridge(principal, st.session_state.clients, st.session_state.assistants)
+    if st.session_state.get("selected_model_name") not in models:
+        st.session_state.selected_model_name = next(iter(models))
 #    if name:
 #        st.text("Name: " + name)
     if email:
@@ -1720,7 +2014,8 @@ with st.sidebar:
 
     model = models[st.selectbox(
         "Model",
-        models.keys()
+        models.keys(),
+        key="selected_model_name"
     )]
     options = {}
 
@@ -1733,10 +2028,13 @@ with st.sidebar:
             reasoning_effort_choices = model["support_reasoning_effort"]
         else:
             reasoning_effort_choices = ["minimal", "low", "medium", "high"]
+        default_effort = model.get("default_reasoning_effort", "high")
+        if st.session_state.get("reasoning_effort") not in reasoning_effort_choices:
+            st.session_state.reasoning_effort = default_effort if default_effort in reasoning_effort_choices else reasoning_effort_choices[0]
         options["reasoning_effort"] = st.selectbox(
             "reasoning_effort",
             reasoning_effort_choices,
-            index = ({c: i for i, c in enumerate(reasoning_effort_choices)})[model.get("default_reasoning_effort", "high")]
+            key="reasoning_effort",
         )
 
     uploaded_files = None
@@ -1750,7 +2048,8 @@ with st.sidebar:
         if model["api_mode"] in ["assistant", "response"]:
             tool_for_files = st.selectbox(
                 "ファイルの用途",
-                ["file_search", "code_interpreter"]
+                ["file_search", "code_interpreter"],
+                key="tool_for_files"
             )
             st.session_state.switches[tool_for_files] = True
         else:
@@ -1765,7 +2064,8 @@ with st.sidebar:
         )
         detail_level = st.selectbox(
             "画像の詳細レベル",
-            ["auto", "high", "low"]
+            ["auto", "high", "low"],
+            key="detail_level"
         )
 
     if model["api_mode"] == "assistant":
@@ -1818,7 +2118,6 @@ with st.sidebar:
     # DeepSeek V3.2がtool_choice="auto"では上手くtool call出来ないことに対する応急処置
     if model["model"] == "DeepSeek-V3.2" and model["api_mode"] == "completion" and model.get("support_tools", False) and st.toggle(
             "tool_choice required",
-            value=True,
             key="tool_choice"
         ):
         options["tool_choice"] = "required"
@@ -1827,7 +2126,6 @@ with st.sidebar:
     if model["streaming"] and not switches.get("image_generation", False):
         streaming_enabled = st.toggle(
             "streaming mode",
-            value=True,
             key="streaming"
         )
     # image_generation toolは(テキストの)streaming modeには対応していない
@@ -1837,7 +2135,6 @@ with st.sidebar:
     if model["api_mode"] == "assistant" or model["api_mode"] == "response":
         show_code_and_logs = st.toggle(
             "show code and logs",
-            value=False,
             key="show_code_and_logs"
         )
 
@@ -1905,6 +2202,8 @@ if st.session_state.get("processing"):
                 "model": model["model"],
                 "token_usage": metadata["token_usage"]
             }, principal)
+            _snapshot_log("save.trigger_after_response")
+            queue_snapshot_save(principal, conversation)
 
             # 最終的な内容で描画しなおすべきか？当面不要と判断。
             # placeholderを使って清書する事も考えたが、ブラウザ側との同期に失敗し、前のコンテナのコンテンツが
